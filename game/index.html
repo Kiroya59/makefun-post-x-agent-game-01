@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NEON DODGE — built from one prompt</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #07030d; height: 100%; overflow: hidden; }
+  #wrap { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; background: #07030d; box-shadow: 0 0 60px rgba(196, 28, 131, .35); }
+  #hint {
+    position: fixed; left: 0; right: 0; bottom: 14px; text-align: center;
+    font: 600 13px/1.4 "JetBrains Mono", monospace; color: #8f8a99; letter-spacing: .12em;
+    pointer-events: none; text-transform: uppercase;
+  }
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="game" width="720" height="480"></canvas></div>
+<div id="hint">Move: mouse or arrow keys &middot; dodge the meteors &middot; 3 lives</div>
+<script>
+"use strict";
+// NEON DODGE — a tiny browser game built from one prompt.
+// Dodge the falling meteors. Score ticks up while you survive.
+const cv = document.getElementById("game");
+const ctx = cv.getContext("2d");
+const W = cv.width, H = cv.height;
+
+const params = new URLSearchParams(location.search);
+const AUTO = params.get("auto") === "1";
+
+const player = { x: W / 2, y: H - 70, r: 14, vx: 0, speed: 420 };
+const keys = {};
+let meteors = [];
+let parts = [];
+let stars = [];
+let score = 0, best = 0, lives = 3;
+let spawnT = 0, elapsed = 0, over = false, started = false;
+let shake = 0;
+
+for (let i = 0; i < 90; i++) {
+  stars.push({ x: Math.random() * W, y: Math.random() * H, s: Math.random() * 1.8 + .4, v: Math.random() * 12 + 4 });
+}
+
+function rand(a, b) { return a + Math.random() * (b - a); }
+
+function spawnMeteor() {
+  const r = rand(10, 26);
+  meteors.push({
+    x: rand(r, W - r), y: -r - 10, r: r,
+    vy: rand(120, 190) + elapsed * 6,
+    vx: rand(-30, 30),
+    rot: rand(0, Math.PI * 2), vr: rand(-1.5, 1.5),
+    hue: Math.random() < .5 ? "196,28,131" : "0,229,255"
+  });
+}
+
+function burst(x, y, rgb) {
+  for (let i = 0; i < 26; i++) {
+    const a = Math.random() * Math.PI * 2, sp = rand(40, 260);
+    parts.push({ x: x, y: y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: rand(.3, .8), rgb: rgb });
+  }
+}
+
+function reset() {
+  meteors = []; parts = [];
+  score = 0; lives = 3; elapsed = 0; over = false; started = true;
+  player.x = W / 2; player.y = H - 70;
+}
+
+function autoSteer(dt) {
+  // Simple autopilot: drift away from the nearest meteor above the ship.
+  let threat = null, bestD = 1e9;
+  for (const m of meteors) {
+    if (m.y < player.y && m.y > player.y - 260) {
+      const d = Math.abs(m.x - player.x) + (player.y - m.y) * .4;
+      if (d < bestD) { bestD = d; threat = m; }
+    }
+  }
+  let dir = 0;
+  if (threat) dir = threat.x > player.x ? -1 : 1;
+  else if (player.x < W / 2 - 40) dir = 1;
+  else if (player.x > W / 2 + 40) dir = -1;
+  player.x += dir * player.speed * dt;
+  player.x = Math.max(player.r + 6, Math.min(W - player.r - 6, player.x));
+}
+
+function update(dt) {
+  if (!started || over) return;
+  elapsed += dt;
+  score += dt * 10;
+  spawnT -= dt;
+  if (spawnT <= 0) { spawnMeteor(); spawnT = Math.max(.18, .62 - elapsed * .012); }
+
+  if (AUTO) autoSteer(dt);
+  else {
+    let dir = 0;
+    if (keys["ArrowLeft"] || keys["a"]) dir -= 1;
+    if (keys["ArrowRight"] || keys["d"]) dir += 1;
+    player.x += dir * player.speed * dt;
+    player.x = Math.max(player.r + 6, Math.min(W - player.r - 6, player.x));
+  }
+
+  for (const m of meteors) {
+    m.y += m.vy * dt; m.x += m.vx * dt; m.rot += m.vr * dt;
+  }
+  meteors = meteors.filter(m => m.y - m.r < H + 20);
+
+  for (let i = meteors.length - 1; i >= 0; i--) {
+    const m = meteors[i];
+    const dx = m.x - player.x, dy = m.y - player.y;
+    if (dx * dx + dy * dy < (m.r + player.r - 4) * (m.r + player.r - 4)) {
+      burst(player.x, player.y, "255,80,120");
+      meteors.splice(i, 1);
+      lives -= 1; shake = 12;
+      if (lives <= 0) { over = true; best = Math.max(best, Math.floor(score)); }
+    }
+  }
+
+  for (const p of parts) { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; }
+  parts = parts.filter(p => p.life > 0);
+  if (shake > 0) shake -= dt * 40;
+  for (const s of stars) { s.y += s.v * dt; if (s.y > H) { s.y = 0; s.x = Math.random() * W; } }
+}
+
+function drawShip() {
+  ctx.save();
+  ctx.translate(player.x, player.y);
+  ctx.shadowColor = "#00e5ff"; ctx.shadowBlur = 18;
+  ctx.fillStyle = "#00e5ff";
+  ctx.beginPath();
+  ctx.moveTo(0, -18); ctx.lineTo(13, 12); ctx.lineTo(0, 5); ctx.lineTo(-13, 12);
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+
+function drawMeteor(m) {
+  ctx.save();
+  ctx.translate(m.x, m.y); ctx.rotate(m.rot);
+  ctx.shadowColor = "rgba(" + m.hue + ",1)"; ctx.shadowBlur = 14;
+  ctx.fillStyle = "rgba(" + m.hue + ",.9)";
+  ctx.beginPath();
+  for (let i = 0; i < 7; i++) {
+    const a = (i / 7) * Math.PI * 2;
+    const rr = m.r * (i % 2 ? .78 : 1);
+    ctx[i ? "lineTo" : "moveTo"](Math.cos(a) * rr, Math.sin(a) * rr);
+  }
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+
+function draw() {
+  ctx.save();
+  if (shake > 0) ctx.translate(rand(-shake, shake) * .4, rand(-shake, shake) * .4);
+  ctx.fillStyle = "#07030d";
+  ctx.fillRect(-20, -20, W + 40, H + 40);
+  ctx.fillStyle = "#cfc9dd";
+  for (const s of stars) ctx.fillRect(s.x, s.y, s.s, s.s);
+
+  for (const m of meteors) drawMeteor(m);
+  for (const p of parts) {
+    ctx.globalAlpha = Math.max(0, p.life * 1.6);
+    ctx.fillStyle = "rgb(" + p.rgb + ")";
+    ctx.fillRect(p.x, p.y, 3, 3);
+  }
+  ctx.globalAlpha = 1;
+  if (started && !over) drawShip();
+
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "700 22px 'JetBrains Mono', monospace";
+  ctx.textAlign = "left";
+  ctx.fillText("SCORE " + Math.floor(score), 16, 32);
+  ctx.textAlign = "right";
+  ctx.fillStyle = "#c41c83";
+  ctx.fillText("♥".repeat(Math.max(0, lives)) || "—", W - 16, 32);
+
+  if (!started) {
+    ctx.fillStyle = "rgba(7,3,13,.72)";
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "#00e5ff";
+    ctx.font = "700 44px 'JetBrains Mono', monospace";
+    ctx.fillText("NEON DODGE", W / 2, H / 2 - 30);
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "600 17px 'JetBrains Mono', monospace";
+    ctx.fillText("one prompt. one game.", W / 2, H / 2 + 8);
+    ctx.fillStyle = "#c41c83";
+    ctx.font = "700 18px 'JetBrains Mono', monospace";
+    ctx.fillText(AUTO ? "AUTOPLAY" : "CLICK OR PRESS ANY KEY TO PLAY", W / 2, H / 2 + 48);
+  }
+  if (over) {
+    ctx.fillStyle = "rgba(7,3,13,.72)";
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "#ff5078";
+    ctx.font = "700 40px 'JetBrains Mono', monospace";
+    ctx.fillText("GAME OVER", W / 2, H / 2 - 20);
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "700 22px 'JetBrains Mono', monospace";
+    ctx.fillText("SCORE " + Math.floor(score) + "   ·   BEST " + best, W / 2, H / 2 + 18);
+    ctx.fillStyle = "#8f8a99";
+    ctx.font = "600 15px 'JetBrains Mono', monospace";
+    ctx.fillText("press R to play again", W / 2, H / 2 + 52);
+  }
+  ctx.restore();
+}
+
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(.05, (now - last) / 1000);
+  last = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+addEventListener("keydown", e => {
+  keys[e.key] = true;
+  if (!started) reset();
+  if (e.key === "r" || e.key === "R") reset();
+  if (e.key === " ") e.preventDefault();
+});
+addEventListener("keyup", e => { keys[e.key] = false; });
+cv.addEventListener("pointermove", e => {
+  const r = cv.getBoundingClientRect();
+  player.x = ((e.clientX - r.left) / r.width) * W;
+  if (!started) reset();
+});
+cv.addEventListener("pointerdown", () => { if (!started) reset(); });
+
+if (AUTO) {
+  reset();
+  // Fast-forward: render a genuine mid-game frame (?t= seconds of play).
+  const ff = Math.max(0, parseFloat(params.get("t") || "0"));
+  for (let i = 0; i < Math.floor(ff * 60); i++) update(1 / 60);
+  document.getElementById("hint").style.display = "none";
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
